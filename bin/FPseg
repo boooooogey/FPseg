@@ -1,0 +1,27 @@
+#!/usr/bin/env python
+import FPseg
+import argparse
+
+parser = argparse.ArgumentParser(description="Genome segmentation tool")
+
+parser.add_argument("-b", "--bigwig-files", help="Directory where bigwig files are stored.", required=True)
+parser.add_argument("-t", "--training-bed", help="Bed file with segments to be included in trainig of the GMM model.", required=True)
+parser.add_argument("-c", "--chromosome-sizes", help="File containing chromosome sizes.", required=True)
+parser.add_argument("-l", "--lambda-list", help="File containing lambda values for each signal.", required=True)
+parser.add_argument("-o", "--output", help="Path to write output.", required=True)
+parser.add_argument("-s", "--bin-size", help="Size of each bin.", type=int, default=200)
+parser.add_argument("-v", "--verbose", help="Print information about progress of segmentation.", action="store_true")
+
+args = parser.parse_args()
+
+segmentor = FPseg.Segmentor(args.bigwig_files, args.bin_size, args.lambda_list, args.chromosome_sizes, args.training_bed, args.output)
+
+if args.verbose:
+    print("Fitting training data to GMM")
+
+segmentor.train_gmm()
+
+if args.verbose:
+    print("Annotating genome")
+
+segmentor.label_data(verbose=args.verbose)

@@ -148,8 +148,15 @@ def convert_to_bed(labels,chr):
     return bbed
 
 def write_text(text, path):
-    with open(text, "w") as file:
-        file.write(path)
+    with open(path, "w") as file:
+        file.write(text)
+
+def copy_binned(outvec, invec, bin_size):
+    if len(invec) % bin_size == 0:
+        outvec[:] = invec.reshape(-1, bin_size).mean(axis=1)
+    else:
+        outvec[:-1] = invec[:int(bin_size * (len(outvec)-1))].reshape(-1, bin_size).mean(axis=1)
+        outvec[-1] = invec[int(bin_size * (len(outvec)-1)):].mean()
 
 class GenomeReader:
     '''
@@ -159,22 +166,16 @@ class GenomeReader:
         binsize: size of the bins
         chrsizes: dictionary of chromosome sizes.
     '''
-    def __init__(self, bwpath, bedpath, binsize, lambdapath, chrsizepath):
+    def __init__(self, bwpath, binsize, lambdapath, chrsizepath):
         self.bwpath = bwpath
-        self.bedpath = bedpath
         self.binsize = binsize
         self.bwfiles = sorted(glob.glob(os.path.join(self.bwpath,"*.bw")))
         self.nbwpath = len(self.bwfiles)
-        self.chrs, self.starts, self.ends = _read_bed(self.bedpath)
-        self.nchunks = len(self.chrs)
         self.lambdas = _read_arr(lambdapath)
         self.chrsizes = _read_dict(chrsizepath)
 
-    def get_chunk_size(self, i):
-        return int(np.ceil((self.ends[i] - self.starts[i])/self.binsize))
-
-    def get_chunk_number(self):
-        return self.nchunks
+    def nbw(self):
+        return len(self.bwfiles)
 
     def get_binned_training_mat(self, i):
         '''
@@ -213,95 +214,110 @@ class GenomeReader:
         _read_from_bigwig(out, self.bwfiles[j], chr, offset + index * self.binsize, offset + (index+1) * self.binsize)
         return out
 
-    def get_l0_approx_training(self):
-        binvec = np.empty(self.binsize)
-        init_size = int(200)
-        out = np.empty((self.nbwpath,0))
+    #def get_l0_approx_training(self):
+    #    binvec = np.empty(self.binsize)
+    #    init_size = int(200)
+    #    out = np.empty((self.nbwpath,0))
 
-        for i in range(self.nchunks):
-            length = self.ends[i] - self.starts[i]
-            binned_length = int(np.ceil((self.ends[i] - self.starts[i])/self.binsize))
-            vec = np.empty(length)
-            vecbinned = np.empty(binned_length)
-            breakpoints = np.empty(init_size, dtype=int)
-            iibreakpoints = 0
-            
-            print("approximating")
-            for j, f in enumerate(self.bwfiles):
-                print(f)
-                _read_from_bigwig_sampled(vecbinned, f, self.chrs[i], self.starts[i], self.ends[i], self.binsize)
-                #_read_from_bigwig_binned(vecbinned, f, self.chrs[i], self.starts[i], self.ends[i], self.binsize)
-                bps = l0poissonapproximateCondensed(vecbinned, self.lambdas[j])[1][:-1]
-                for k in range(len(bps)):
-                    s, e = self.starts[i]+bps[k]*self.binsize, self.starts[i]+(bps[k]+1)*self.binsize
-                    _read_from_bigwig(binvec, f, self.chrs[i], s, e)
-                    if init_size <= iibreakpoints + k:
-                        tmp = np.empty(int(init_size * 2), dtype=int)
-                        tmp[:init_size] = breakpoints
-                        init_size = int(init_size*2)
-                        breakpoints = tmp
+    #    for i in range(self.nchunks):
+    #        length = self.ends[i] - self.starts[i]
+    #        binned_length = int(np.ceil((self.ends[i] - self.starts[i])/self.binsize))
+    #        vec = np.empty(length)
+    #        vecbinned = np.empty(binned_length)
+    #        breakpoints = np.empty(init_size, dtype=int)
+    #        iibreakpoints = 0
+    #        
+    #        for j, f in enumerate(self.bwfiles):
+    #            #_read_from_bigwig_sampled(vecbinned, f, self.chrs[i], self.starts[i], self.ends[i], self.binsize)
+    #            _read_from_bigwig_binned(vecbinned, f, self.chrs[i], self.starts[i], self.ends[i], self.binsize)
+    #            bps = l0poissonapproximateCondensed(vecbinned, self.lambdas[j])[1][:-1]
+    #            for k in range(len(bps)):
+    #                s, e = self.starts[i]+bps[k]*self.binsize, self.starts[i]+(bps[k]+1)*self.binsize
+    #                _read_from_bigwig(binvec, f, self.chrs[i], s, e)
+    #                if init_size <= iibreakpoints + k:
+    #                    tmp = np.empty(int(init_size * 2), dtype=int)
+    #                    tmp[:init_size] = breakpoints
+    #                    init_size = int(init_size*2)
+    #                    breakpoints = tmp
 
-                    breakpoints[iibreakpoints+k] = self.starts[i]+bps[k]*self.binsize+l0poissonbreakpoint(binvec)
-                iibreakpoints += len(bps)
-            
-            breakpoints = np.unique(breakpoints[:iibreakpoints])
-            chunk = np.empty((len(self.bwfiles), len(breakpoints)+1))
-            print("refining")
-            for j, f in enumerate(self.bwfiles):
-                print(f)
-                _read_from_bigwig_breakpoints(chunk[j], f, self.chrs[i], self.starts[i], self.ends[i], breakpoints)
-            out = np.hstack([out,chunk])
+    #                breakpoints[iibreakpoints+k] = self.starts[i]+bps[k]*self.binsize+l0poissonbreakpoint(binvec)
+    #            iibreakpoints += len(bps)
+    #        
+    #        breakpoints = np.unique(breakpoints[:iibreakpoints])
+    #        chunk = np.empty((len(self.bwfiles), len(breakpoints)+1))
+    #        for j, f in enumerate(self.bwfiles):
+    #            _read_from_bigwig_breakpoints(chunk[j], f, self.chrs[i], self.starts[i], self.ends[i], breakpoints)
+    #        out = np.hstack([out,chunk])
 
-        return out
+    #    return out
 
     def read_l0_approx(self, chr, start, end):
-        binvec = np.empty(self.binsize)
         init_size = int(200)
+        if end > self.chrsizes[chr]:
+            end = self.chrsizes[chr]
+        binvec = np.empty(self.binsize)
         length = end - start
         binned_length = int(np.ceil((end - start)/self.binsize))
-        vec = np.empty(length)
+        mat = np.empty((len(self.bwfiles), length))
+        for i, f in enumerate(self.bwfiles):
+            _read_from_bigwig(mat[i], f, chr, start, end)
         vecbinned = np.empty(binned_length)
         breakpoints = np.empty(init_size, dtype=int)
         iibreakpoints = 0
 
         for j, f in enumerate(self.bwfiles):
-            _read_from_bigwig_sampled(vecbinned, f, chr, start, end, self.binsize)
+            #_read_from_bigwig_sampled(vecbinned, f, chr, start, end, self.binsize)
             #_read_from_bigwig_binned(vecbinned, f, chr, start, end, self.binsize)
+            copy_binned(vecbinned, mat[j], self.binsize)
             bps = l0poissonapproximateCondensed(vecbinned, self.lambdas[j])[1][:-1]
             for k in range(len(bps)):
-                s, e = start+bps[k]*self.binsize, start+(bps[k]+1)*self.binsize
+                s, e = bps[k]*self.binsize, (bps[k]+1)*self.binsize #start+bps[k]*self.binsize, start+(bps[k]+1)*self.binsize
                 if e > self.chrsizes[chr]:
                     e = self.chrsizes[chr]
-                _read_from_bigwig(binvec, f, chr, s, e)
+                #_read_from_bigwig(binvec, f, chr, s, e)
                 if init_size <= iibreakpoints + k:
                     tmp = np.empty(int(init_size * 2), dtype=int)
                     tmp[:init_size] = breakpoints
                     init_size = int(init_size*2)
                     breakpoints = tmp
 
-                breakpoints[iibreakpoints+k] = start+bps[k]*self.binsize+l0poissonbreakpoint(binvec)
+                breakpoints[iibreakpoints+k] = bps[k]*self.binsize+l0poissonbreakpoint(mat[j,s:e]) #start+bps[k]*self.binsize+l0poissonbreakpoint(mat[j,s:e])
             iibreakpoints += len(bps)
         
         breakpoints = np.unique(breakpoints[:iibreakpoints])
-        out = np.empty((len(self.bwfiles), len(breakpoints)+1))
-        for j, f in enumerate(self.bwfiles):
-            _read_from_bigwig_breakpoints(out[j], f, chr, start, end, breakpoints)
-        return out, np.r_[start, breakpoints], np.r_[breakpoints, end]
+        out = np.empty((len(breakpoints)+1, len(self.bwfiles)))
+        mat = mat.T
+        if len(breakpoints) == 0:
+            out[0] = mat.mean(axis=0)
+        else:
+            out[0] = mat[0:breakpoints[0]].mean(axis=0)
+            for i in range(1,len(breakpoints)):
+                out[i] = mat[breakpoints[i-1]:breakpoints[i]].mean(axis=0)
+            out[-1] = mat[breakpoints[-1]:].mean(axis=0)
+
+        #for j, f in enumerate(self.bwfiles):
+        #    _read_from_bigwig_breakpoints(out[j], f, chr, start, end, breakpoints)
+        return out, np.r_[start, start + breakpoints], np.r_[start + breakpoints, end]
                     
 class Segmentor:
-    def __init__(self, bwpath, bedpath, binsize, lambdapath, chrsizepath, outputpath, chunksize = 10000000, nsample=2000, n_components=25, random_state=42, max_iter=2000, covariance_type="full", init_params="kmeans", weight_concentration_prior_type="dirichlet_process"):
-        self.reader = GenomeReader(bwpath, bedpath, binsize, lambdapath, chrsizepath)
-        self.nchunk = self.reader.get_chunk_number()
+    def __init__(self, bwpath, binsize, lambdapath, chrsizepath, bedpath, outputpath, chunksize = 10000000, nsample=2000, n_components=25, random_state=42, max_iter=2000, covariance_type="full", init_params="kmeans", weight_concentration_prior_type="dirichlet_process"):
+        self.reader = GenomeReader(bwpath, binsize, lambdapath, chrsizepath)
         self.nsample = nsample
         self.chunksize = chunksize
+        self.bedpath = bedpath
+        self.chrs, self.starts, self.ends = _read_bed(self.bedpath)
+        self.nchunk = len(self.chrs)
         self.chrsizes = _read_dict(chrsizepath)
         self.outputpath = outputpath
         self.rng = np.random.default_rng(seed=42)
         self.gmm = BayesianGaussianMixture(n_components=n_components, random_state=random_state, max_iter=max_iter, covariance_type=covariance_type, init_params=init_params, weight_concentration_prior_type=weight_concentration_prior_type)
 
     def train_gmm(self):
-        traindata = self.reader.get_l0_approx_training().T
-        self.gmm.fit(traindata[self.rng.choice(range(traindata.shape[0]), self.nsample, replace=False)])
+        traindata = np.empty((self.nchunk*self.nsample, self.reader.nbw()))
+        for i, c, s, e in zip(range(self.nchunk), self.chrs, self.starts, self.ends):
+            tmp = self.reader.read_l0_approx(c,s,e)[0]
+            traindata[(i*self.nsample):((i+1)*self.nsample)] = tmp[self.rng.choice(range(tmp.shape[0]), self.nsample, replace=False)]
+        self.gmm.fit(traindata)
 
     def label_data(self, verbose=False):
         bed = ""
@@ -318,7 +334,6 @@ class Segmentor:
                 if verbose: print(f"Labeling chromosome {i}: {s}-{e}")
                 if verbose: print(f"\tReading L0 approximation")
                 data, interval_starts, interval_ends = self.reader.read_l0_approx(i, s, e)
-                data = data.T
                 if verbose: print(f"\tCarrying out predictions")
                 labels = self.gmm.predict(data)
                 if verbose: print(f"\tExpanding labels")

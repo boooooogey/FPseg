@@ -15,6 +15,7 @@ setup(
     url="https://github.com/boooooogey/FPseg",
     author="Ali Tugrul Balci",
     author_email="",
+    scripts=["bin/FPseg"],
     classifiers=[
         "Programming Language :: Python :: 3",
     ],
