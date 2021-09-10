@@ -10,11 +10,14 @@ parser.add_argument("-c", "--chromosome-sizes", help="File containing chromosome
 parser.add_argument("-l", "--lambda-list", help="File containing lambda values for each signal.", required=True)
 parser.add_argument("-o", "--output", help="Path to write output.", required=True)
 parser.add_argument("-s", "--bin-size", help="Size of each bin.", type=int, default=200)
+parser.add_argument("-u", "--chunk-size", help="Size of each chunk.", type=int, default=10000000)
+parser.add_argument("-a", "--sample-size", help="Sample size from each chunk.", type=int, default=2000)
+parser.add_argument("-m", "--components", help="Number of components in the mixture model.", type=int, default=25)
 parser.add_argument("-v", "--verbose", help="Print information about progress of segmentation.", action="store_true")
 
 args = parser.parse_args()
 
-segmentor = FPseg.Segmentor(args.bigwig_files, args.bin_size, args.lambda_list, args.chromosome_sizes, args.training_bed, args.output)
+segmentor = FPseg.Segmentor(args.bigwig_files, args.bin_size, args.lambda_list, args.chromosome_sizes, args.training_bed, args.output, chunksize=args.chunk_size, nsample=args.sample_size, n_components=args.components)
 
 if args.verbose:
     print("Fitting training data to GMM")
