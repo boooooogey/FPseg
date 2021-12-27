@@ -79,7 +79,7 @@ void PiecewiseFunction<T>::append(const double& y, const double& w, const double
 
 template <class T>
 void PiecewiseFunction<T>::append(const double& t, const double& knot){
-    pieces.push_back(t);
+    pieces.push_back(T(t));
     knots.push_back(knot);
 }
 
