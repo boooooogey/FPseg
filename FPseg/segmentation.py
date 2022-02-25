@@ -6,6 +6,7 @@ import multiprocessing as mp
 from contextlib import closing
 from sklearn.preprocessing import StandardScaler
 import pickle
+import os
 
 def _to_numpy_array(mp_arr, N):
     '''
@@ -79,32 +80,6 @@ def _read_from_bigwig(vec, path, chr, start, end):
         vec[:(end-start)] = np.array(bigwig.values(chr,start,end))
     np.nan_to_num(vec,copy=False,nan=0)
 
-def _mean_nan_to_zero(arr):
-    mask = np.isnan(arr)
-    if np.all(mask):
-        return 0
-    else:
-        return np.nanmean(arr)*np.sum(~np.isnan(arr))/len(arr)
-
-def _read_from_bigwig_breakpoints(vec, path, chr, start, end, bps):
-    '''
-    Read from a bigwig file
-        vec: vec is an array that is overwritten with the values from bigwig.
-        path: path of the bigwig file
-        chr: chromosome number.
-        start: starting index in the chromosome number.
-        end: ending index in the chromosome number.
-    '''
-    with pyBigWig.open(path) as bigwig:
-        if len(bps) == 0:
-            vec[0] = _mean_nan_to_zero(bigwig.values(chr,start,end))
-        else:
-            vec[0] = _mean_nan_to_zero(bigwig.values(chr,start,bps[0]))
-            for i in range(len(bps)-1):
-                arr = bigwig.values(chr,bps[i],bps[i+1])
-                vec[i+1] = _mean_nan_to_zero(bigwig.values(chr,bps[i],bps[i+1]))
-            vec[len(bps)] = _mean_nan_to_zero(bigwig.values(chr,bps[-1],end))
-
 def _copy_binned(outvec, invec, bin_size, size):
     '''
     Copy invec to outvec by binning.
@@ -112,10 +87,11 @@ def _copy_binned(outvec, invec, bin_size, size):
     '''
     invec = invec[:size]
     if len(invec) % bin_size == 0:
-        outvec[:] = invec.reshape(-1, bin_size).mean(axis=1)
+        outvec[:] = invec.reshape(-1, bin_size).sum(axis=1)
     else:
-        outvec[:-1] = invec[:int(bin_size * (len(outvec)-1))].reshape(-1, bin_size).mean(axis=1)
-        outvec[-1] = invec[int(bin_size * (len(outvec)-1)):].mean()
+        outvec[:-1] = invec[:int(bin_size * (len(outvec)-1))].reshape(-1, bin_size).sum(axis=1)
+        outvec[-1] = invec[int(bin_size * (len(outvec)-1)):].sum()
+#mean
 
 def _return_break_points_from_a_single_bw(chrom_size, binsize, l, N, M, size, i):
     '''
@@ -224,7 +200,7 @@ def _return_reduced_data_parallel(mat, reduced, bps, N, M, offset, selected_ii, 
     bps is the starting indeces of the segments.
     N is the number of epigenetic segments.
     M is the second dimension of the mat.
-    offset is the starting index to right reduced. (column)
+    offset is the starting index to write reduced. (column)
     selected_ii is the selected segments.
     '''
     
@@ -246,7 +222,7 @@ def _return_reduced_data_parallel(mat, reduced, bps, N, M, offset, selected_ii, 
     with closing(mp.Pool(n_cpus, initializer=init, initargs=(mat,reduced,))) as p:
         p.starmap_async(_fill_reduced_parallel, [(array_ii[i], selected_ii, bps, N, M, offset, i) for i in range(n_cpus)])
     p.join()
-    return n_sample
+    return n_sample, len(bps)
 
 def _bed_to_np(bed, chr, start, end):
     bed = [i.strip().split() for i in bed]
@@ -277,7 +253,7 @@ def _return_target_ii(end, chunk_size, start = 0):
     return tmp[:n], tmp[1:]
 
 def _prepare_for_classifier(mat, N, number_of_sample_found):
-    scaler = StandardScaler(copy=False)
+    scaler = StandardScaler(copy=False, with_mean=False)
     training = _to_numpy_array(mat, N)[:,:number_of_sample_found].T
     np.log1p(training, out = training)
     scaler.fit_transform(training)
@@ -325,7 +301,10 @@ def _find_lambda(vec, lambs, w = 10, show = False):
     return obj
 
 def _pick_lambda(reader, chrom, lambda_window, binsize, search_end = 3, search_start = 0, num = 100, second_window = 50, verbose = True, path = None): #search_end and search_start are logarithmic
-
+    if path is not None:
+        from matplotlib import pyplot as plt
+        px = 1/plt.rcParams['figure.dpi']
+        figure, axis = plt.subplots(reader.number_of_bigwig_files, 1, sharex = True, figsize = (3840*px,2160*px))
     starts = np.empty(reader.number_of_bigwig_files, dtype=int)
     ends = np.empty(reader.number_of_bigwig_files, dtype=int)
     for l in range(reader.number_of_bigwig_files):
@@ -353,14 +332,24 @@ def _pick_lambda(reader, chrom, lambda_window, binsize, search_end = 3, search_s
         if binsize == 1:
             obj = _find_lambda(data[i], search_range_2)
         else:
-            _copy_binned(vecbinned, data[i], binsize, lambda_window)
+            #_copy_binned(vecbinned, data[i], binsize, lambda_window)
             obj = _find_lambda(vecbinned, search_range_2)
         hyperparameter_list[i] = search_range_2[np.argmin(obj)]
+        if path is not None:
+            if binsize == 1:
+                axis[i].plot(range(len(data[i])), data[i], 'o')
+                axis[i].plot(range(len(data[i])), l0poissonapproximate(data[i], hyperparameter_list[i]), linewidth=3)
+            else:
+                axis[i].plot(range(len(vecbinned)), vecbinned, 'o')
+                axis[i].plot(range(len(vecbinned)), l0poissonapproximate(vecbinned, hyperparameter_list[i]), linewidth=3)
         if verbose: print(f"Lambda: {hyperparameter_list[i]}")
     if path is not None:
-        with open(path, "w") as file:
+        with open(os.path.join(path, "hyperparameter.list"), "w") as file:
             for i in range(len(hyperparameter_list)):
                 file.write(reader.bigwig_file_list[i] + ": " + str(hyperparameter_list[i]) + "\n")
+        figure.tight_layout()
+        figure.savefig(os.path.join(path,"lambda.plot.png"))
+        plt.close(figure)
     return hyperparameter_list
 
 class GenomeReader:
@@ -416,26 +405,46 @@ class Segmentor:
         self.N = self.reader.number_of_bigwig_files
         self.number_of_cores = number_of_cores
 
+        self.training_data = None
+
+    def save_model(self, path):
+        
+        with open(os.path.join(path, "model.pkl"), "wb") as file:
+            pickle.dump(self.classifier, file)
+
+        np.save(os.path.join(path, "training_data"), self.training_data)
 
     def fit(self, regions, verbose = False):
         number_of_iterations = len(regions)
         matrix_shared = mp.Array(ctypes.c_double, (self.N+1) * self.M)
         reduced_shared = mp.Array(ctypes.c_double, 3*(self.N+1) * self.number_of_sample * number_of_iterations)
         number_of_sample_found = 0
+        total_number = 0
 
         if verbose: print("Training...")
         for i, (chromosome, start, end) in enumerate(regions):
             if verbose: print(f"Collecting sample from {chromosome}:{start}-{end}...")
             self.reader.read(matrix_shared, chromosome, start, end, self.number_of_cores)
             bps = _return_break_points_reduced_parallel(matrix_shared, chromosome, self.bin_size, self.lambda_list, self.chromosome_size_dictionary, self.N, self.M, end - start, self.number_of_cores)
-            selected_ii = np.sort(np.random.choice(len(bps), self.number_of_sample, replace=False))
-            number_of_sample_found += _return_reduced_data_parallel(matrix_shared, reduced_shared, bps, self.N, self.M, i * self.number_of_sample, selected_ii, self.number_of_cores)
+            if self.number_of_sample > len(bps):
+                selected_ii = np.arange(len(bps))
+            else:
+                selected_ii = np.sort(np.random.choice(len(bps), self.number_of_sample, replace=False))
+            tmp_number_of_sample, tmp_total = _return_reduced_data_parallel(matrix_shared, reduced_shared, bps, self.N, self.M, number_of_sample_found, selected_ii, self.number_of_cores)#i * self.number_of_sample, selected_ii, self.number_of_cores)
+            number_of_sample_found += tmp_number_of_sample
+            total_number += tmp_total
+            if verbose: print(f"\tCollected {number_of_sample_found}/{total_number}.")
 
         if verbose: print(f"Training the classifier...")
-        training = _to_numpy_array(reduced_shared, 3*(self.N+1))[:,:number_of_sample_found].T
         _prepare_for_classifier(reduced_shared, 3*(self.N+1), number_of_sample_found)
-        training = _to_numpy_array(reduced_shared, 3*(self.N+1))[:,:number_of_sample_found].T
-        self.classifier.fit(training)
+        self.training_data = _to_numpy_array(reduced_shared, 3*(self.N+1))[:,:number_of_sample_found].T
+        np.save("training_data.npy", self.training_data)
+        self.classifier.fit(self.training_data)
+        if not self.classifier.converged_:
+            if verbose: print(f"The model failed to converge.")
+            self.classifier.max_iter = self.classifier.max_iter * 2
+            if verbose: print(f"Trying one more time with maximum iteration: {self.classifier.max_iter}.")
+            self.classifier.fit(self.training_data)
         if verbose: print(f"Training is done.")
         classifier_file = "classifier.pkl"
         if verbose: print(f"Saving the classifier into {classifier_file}.")
@@ -457,7 +466,7 @@ class Segmentor:
                     if verbose: print(f"Annotating {chromosome}:{start}-{end}...")
                     self.reader.read(matrix_shared, chromosome, start, end, self.number_of_cores)
                     bps = _return_break_points_reduced_parallel(matrix_shared, chromosome, self.bin_size, self.lambda_list, self.chromosome_size_dictionary, self.N, self.M, end - start, self.number_of_cores)
-                    number_of_sample_found = _return_reduced_data_parallel(matrix_shared, reduced_shared, bps, self.N, self.M, 0, np.arange(len(bps)), self.number_of_cores)
+                    number_of_sample_found, _ = _return_reduced_data_parallel(matrix_shared, reduced_shared, bps, self.N, self.M, 0, np.arange(len(bps)), self.number_of_cores)
                     _prepare_for_classifier(reduced_shared, 3*(self.N+1), number_of_sample_found)
                     annotation = _to_numpy_array(reduced_shared, 3*(self.N+1))[:,:number_of_sample_found].T
                     label[:number_of_sample_found] = self.classifier.predict(annotation)
